@@ -132,97 +132,40 @@ if __name__ == '__main__':
     print '\nChecking sampled reads: sense or antisense?'
     sense = 0
     antisense = 0
-    checked_reads = 0
     total_reads = 0
     print_num = 2000
-
 
     for read in read_lines:
         entries = read.split()
         total_reads += 1
         flag = int(entries[1])
-        if not flag & 256:
-            check_sense = re.findall('XS:A:[+-]', read.upper())
-            if not check_sense:
-                continue
-            elif not paired:
-                if check_sense[0] == 'XS:A:+' and flag & 16:
-                    sense += 1
-                    checked_reads += 1
-                    if total_reads < print_num:
-                        print '+ and rev comp, {} reads'.format(checked_reads)
-                elif check_sense[0] == 'XS:A:+' and not flag & 16:
-                    antisense += 1
-                    checked_reads += 1
-                    if total_reads < print_num:
-                        print '+ and forward, {} reads'.format(checked_reads)
-                elif check_sense[0] == 'XS:A:-' and flag & 16:
-                    antisense += 1
-                    checked_reads += 1
-                    if total_reads < print_num:
-                        print '- and rev comp, {} reads'.format(checked_reads)
-                elif check_sense[0] == 'XS:A:-' and not flag & 16:
-                    sense += 1
-                    checked_reads += 1
-                    if total_reads < print_num:
-                        print '- and forward, {} reads'.format(checked_reads)
-                else:
-                    continue
-            else:
-                if check_sense[0] == 'XS:A:+' and flag & 16:
-                    if flag & 64:
-                        sense += 1
-                        checked_reads += 1
-                        if total_reads < print_num:
-                            print '{} first rev comp +'.format(total_reads)
-                    elif flag & 128:
-                        antisense += 1
-                        checked_reads += 1
-                        if total_reads < print_num:
-                            print '{} second rev comp +'.format(total_reads)
-                    else:
-                        continue
-                elif check_sense[0] == 'XS:A:+' and not flag & 16:
-                    if flag & 64:
-                        antisense += 1
-                        checked_reads += 1
-                        if total_reads < print_num:
-                            print '{} first forward +'.format(total_reads)
-                    elif flag & 128:
-                        sense += 1
-                        checked_reads += 1
-                        if total_reads < print_num:
-                            print '{} second forward +'.format(total_reads)
-                    else:
-                        continue
-                elif check_sense[0] == 'XS:A:-' and flag & 16:
-                    if flag & 64:
-                        antisense += 1
-                        checked_reads += 1
-                        if total_reads < print_num:
-                            print '{} first rev comp -'.format(total_reads)
-                    elif flag & 128:
-                        sense += 1
-                        checked_reads += 1
-                        if total_reads < print_num:
-                            print '{} second rev comp -'.format(total_reads)
-                    else:
-                        continue
-                elif check_sense[0] == 'XS:A:-' and not flag & 16:
-                    if flag & 64:
-                        sense += 1
-                        checked_reads += 1
-                        if total_reads < print_num:
-                            print '{} first forward -'.format(total_reads)
-                    elif flag & 128:
-                        antisense += 1
-                        checked_reads += 1
-                        if total_reads < print_num:
-                            print '{} second forward -'.format(total_reads)
-                    else:
-                        continue
-                else:
-                    continue
+
+        if flag & 256:
+            continue
+
+        check_sense = re.findall('XS:A:[+-]', read.upper())
+
+        if not check_sense:
+            continue
+
+        fwd_gene = check_sense[0] == 'XS:A:+'
+        rev_read = flag & 16
+        first_read = flag & 64
+        second_read = flag & 128
+
+        if (fwd_gene and rev_read) or (not fwd_gene and not rev_read):
+            if first_read or not paired:
+                sense += 1
+            elif second_read:
+                antisense += 1
+
+        elif (fwd_gene or rev_read):
+            if first_read or not paired:
+                antisense += 1
+            elif second_read:
+                sense += 1
+
+    checked_reads = sense + antisense
 
     print 'number of sense reads is {}'.format(sense)
     print 'number of antisense reads is {}'.format(antisense)

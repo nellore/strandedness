@@ -135,6 +135,7 @@ if __name__ == '__main__':
     total_reads = 0
     print_num = 2000
 
+
     for read in read_lines:
         entries = read.split()
         total_reads += 1

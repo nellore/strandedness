@@ -18,7 +18,7 @@ Limitations:
 Improvements to be made:
     - Input = SRA accession numbers
     - Start fastq-dump of SRA at one random spot.
-    - align each read as it's run- many in a row.
+    - align each read as it's run many in a row.
 
 """
 
@@ -132,21 +132,18 @@ if __name__ == '__main__':
     print '\nChecking sampled reads: sense or antisense?'
     sense = 0
     antisense = 0
+    checked_reads = 0
     total_reads = 0
     print_num = 2000
-
 
     for read in read_lines:
         entries = read.split()
         total_reads += 1
         flag = int(entries[1])
 
-        if flag & 256:
-            continue
-
+        secondary = flag & 256
         check_sense = re.findall('XS:A:[+-]', read.upper())
-
-        if not check_sense:
+        if secondary or not check_sense:
             continue
 
         fwd_gene = check_sense[0] == 'XS:A:+'
@@ -168,6 +165,7 @@ if __name__ == '__main__':
 
     checked_reads = sense + antisense
 
+
     print 'number of sense reads is {}'.format(sense)
     print 'number of antisense reads is {}'.format(antisense)
     print 'total number of checked reads is {}'.format(checked_reads)
@@ -180,13 +178,14 @@ if __name__ == '__main__':
     r = 0.5
     unstranded_prob = stats.binom.pmf(errors, checked_reads, r)
 
-
     print 'number of "stranded errors" is {}'.format(errors)
-    print 'probability that the read is stranded is {}'.format(stranded_prob)
+    print ('probability of getting this number of sense and antisense'
+           'reads if the expt is stranded is {}').format(stranded_prob)
 
-    unstranded_errors = int(abs(sense-antisense)/2)
+    unstranded_errors = int(abs(sense - antisense) / 2)
     print 'number of unstranded errors is {}'.format(unstranded_errors)
-    print 'probability that the read is unstranded is {}'.format(unstranded_prob)
+    print ('probability of getting this number of sense and antisense '
+           'reads if the expt is unstranded is {}').format(unstranded_prob)
 
 
     #

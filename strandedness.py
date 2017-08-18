@@ -1,7 +1,7 @@
 #!/usr/bin/env python2
 
 """
-Python 2.7 code for determining whether an RNA-seq experiment is stranded or
+Python 2.7 code for determining whether RNA-seq experiments are stranded or
 unstranded, to within a given confidence..
 
 Required input:
@@ -71,30 +71,32 @@ if __name__ == '__main__':
     error_rate = 0.2
 
     # for now, arbitrary: how many reads need to be sampled per experiment
-    # This is set at a low number simply to check for correct running.
-    required_reads = 3
+    # Currently set at a low number simply to check for correct running.
+    required_reads = 10
 
     sra_array = np.genfromtxt(sra_file, delimiter=',', dtype=None)
 
     SRA_num = 0
     for line in sra_array:
-        paired = 0
-        if line[15] == 'PAIRED':
-            paired = 1
-            print 'experiment is paired'
-
         if line[0][0] == 'S':
             sra_acc = str(line[0])
             num_spots = int(line[3])
         else:
             continue
 
+        # THE FOLLOWING IS JUST TO CREATE A SAMPLE RUN: with a large .csv file,
+        # this will check X of the SRAs.
+        if SRA_num > 1:
+            break
+
         SRA_num += 1
 
-        # THE FOLLOWING IS JUST TO CREATE A SAMPLE RUN: with a large .csv file,
-        # this will check only SRA_num of the SRAs.
-        if SRA_num > 2:
-            continue
+        # Is the "paired" label ever wrong?  Should I be re-checking this
+        # with the alignment output?
+        paired = 0
+        if line[15] == 'PAIRED':
+            paired = 1
+            print 'experiment is paired'
 
         # Counters
         sense = 0
@@ -116,55 +118,58 @@ if __name__ == '__main__':
                                          '--skip-technical', '-N', spot, '-X',
                                          spot, '-Z', sra_acc])
                 lines = fastq.split('\n')
-                if len(lines) > 4:
-                    read = sp.check_output(['{}'.format(hisat2), '-k', '1',
-                                            '-c', '--no-head', '-1', lines[1],
-                                            '-2', lines[5], '-x', ref_genome])
-                else:
-                    read = sp.check_output(['{}'.format(hisat2), '-k', '1',
-                                            '--no-head', '-U', fastq,
-                                            '-x', ref_genome])
+                format_lines = lines[:1]+lines[1::2]
+                hisat_input = '\t'.join(format_lines)
 
-                entries = read.split()
-                total_reads += 1
-                print "{} reads have been checked".format(total_reads)
-                flag = int(entries[1])
+                align_command = ('{h2} -k 1 --no-head --12 - -x {ref}'
+                                 ).format(h2=hisat2, ref=ref_genome)
 
-                secondary = flag & 256
-                if secondary:
-                    print 'not a primary read, go to random spot + 1'
-                    continue
+                align_process = sp.Popen('set -exo pipefail; ' + align_command,
+                                         stdin=sp.PIPE, stdout=sp.PIPE,
+                                         shell=True, executable='/bin/bash')
 
-                check_sense = re.findall('XS:A:[+-]', read.upper())
-                if not check_sense:
-                    print 'not a junction read, go to random spot + 1'
-                    continue
+                align_output = align_process.communicate(input=hisat_input)
 
-                fwd_gene = check_sense[0] == 'XS:A:+'
-                rev_read = flag & 16
-                first_read = flag & 64
-                second_read = flag & 128
+                entries = align_output[0].split('\n')
+                for line in entries[:-1]:
+                    print line
+                    read = line.split()
+                    total_reads += 1
+                    print "{} reads have been checked".format(total_reads)
+                    flag = int(read[1])
 
-                if (fwd_gene and rev_read) or (not fwd_gene and not rev_read):
-                    if first_read or not paired:
-                        sense += 1
-                        useful = 1
-                    elif second_read:
-                        antisense += 1
-                        useful = 1
-                elif (fwd_gene or rev_read):
-                    if first_read or not paired:
-                        antisense += 1
-                        useful = 1
-                    elif second_read:
-                        sense += 1
-                        useful = 1
-                checked_reads = sense + antisense
-                if useful:
+                    secondary = flag & 256
+                    if secondary:
+                        print 'not a primary read, go to next spot'
+                        continue
+
+                    check_sense = re.findall('XS:A:[+-]', line.upper())
+                    if not check_sense:
+                        print 'not a junction read, go to next spot'
+                        continue
+
+                    fwd_gene = check_sense[0] == 'XS:A:+'
+                    rev_read = flag & 16
+                    first_read = flag & 64
+                    second_read = flag & 128
+
+                    if ((fwd_gene and rev_read)
+                        or (not fwd_gene and not rev_read)):
+                        if first_read or not paired:
+                            sense += 1
+                        elif second_read:
+                            antisense += 1
+                    elif (fwd_gene or rev_read):
+                        if first_read or not paired:
+                            antisense += 1
+                        elif second_read:
+                            sense += 1
+
+                    checked_reads = sense + antisense
+                    useful = 1
                     print 'a useful read! {} so far'.format(checked_reads)
-                    print 'moving on'
-                else:
-                    print 'checking the next read at this random spot'
+                    print 'moving on to the next random spot.'
+
 
         print '\nfor SRA experiment number {}'.format(SRA_num)
         print 'the SRA accession number is {}'.format(sra_acc)

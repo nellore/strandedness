@@ -169,7 +169,7 @@ if __name__ == '__main__':
                     useful = 1
                     print 'a useful read! {} so far'.format(checked_reads)
                     print 'moving on to the next random spot.'
-
+                    break
 
         print '\nfor SRA experiment number {}'.format(SRA_num)
         print 'the SRA accession number is {}'.format(sra_acc)

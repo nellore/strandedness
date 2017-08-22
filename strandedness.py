@@ -14,17 +14,11 @@ Optional input:
     Acceptable probability of correctness for strandedness call.
     Acceptable confidence of that probability.
 
-Limitations:
-    Many!!
-
 Improvements to be made:
-    - Improve hisat2 call - either take two reads as separate, unpaired reads
-    - Improve checking for paired-end experiment - not just "PAIRED" tag
-    - if the reads are paired, check both of them, not just one.
-    - Put meat of code into function definitions
+    - checking for paired-end experiment - is just the "PAIRED" tag OK?
+    - function definitions
     - How many reads are required?  Unknown.
     - Statistical analysis of reads afterward.
-
 """
 
 # import what needs to be imported.
@@ -35,14 +29,15 @@ import random
 import re
 import subprocess as sp
 from scipy import stats
+import time
 
 # Function definitions?
 
 
 if __name__ == '__main__':
     # arg parse section: for now, accept sam; later, sra numbers?
-    parser = argparse.ArgumentParser(description="Determine sample "
-                                                 "strandedness.")
+    parser = argparse.ArgumentParser(description='Determine sample '
+                                                 'strandedness.')
     parser.add_argument('--srafile', '-s', required=True, help='File with '
                         'SRA accession numbers to be downloaded and '
                         'checked for strandedness.')
@@ -71,13 +66,14 @@ if __name__ == '__main__':
     error_rate = 0.2
 
     # for now, arbitrary: how many reads need to be sampled per experiment
-    # Currently set at a low number simply to check for correct running.
+    # Currently set low to check for correct running.
     required_reads = 10
 
     sra_array = np.genfromtxt(sra_file, delimiter=',', dtype=None)
 
     SRA_num = 0
     for line in sra_array:
+        start_time = time.time()
         if line[0][0] == 'S':
             sra_acc = str(line[0])
             num_spots = int(line[3])
@@ -85,10 +81,9 @@ if __name__ == '__main__':
             continue
 
         # THE FOLLOWING IS JUST TO CREATE A SAMPLE RUN: with a large .csv file,
-        # this will check X of the SRAs.
-        if SRA_num > 1:
+        # this will check X of its SRAs.
+        if SRA_num > 10:
             break
-
         SRA_num += 1
 
         # Is the "paired" label ever wrong?  Should I be re-checking this
@@ -98,78 +93,85 @@ if __name__ == '__main__':
             paired = 1
             print 'experiment is paired'
 
+        # collect 15x required read number, from all random spots.
+        required_spots = required_reads * 15
+        spot_list = np.random.randint(1, num_spots, required_spots)
+        spot_list = np.unique(spot_list)
+        while len(spot_list) < required_spots:
+            collect = required_spots - len(spot_list)
+            new_spots = np.random.randint(1, num_spots, collect)
+            spot_list = np.concatenate((spot_list, new_spots))
+            spot_list = np.unique(spot_list)
+
+        hisat_input = ''
+        for start_spot in spot_list:
+            spot = str(start_spot)
+            
+            # If we have x unique spots, we will get only ~90% reads out, since
+            # with the -E quality filter, some reads are rejected pre-d/l.
+            fastq = sp.check_output(['{}'.format(fastq_dump), '-I', '-B',
+                                     '-W', '-E', '--split-spot',
+                                     '--skip-technical', '-N', spot, '-X',
+                                     spot, '-Z', sra_acc])
+            lines = fastq.split('\n')
+            format_lines = lines[:1]+lines[1::2]
+            read_input = '\t'.join(format_lines) + '\n'
+            hisat_input += read_input
+
+        align_command = ('{h2} -k 1 --no-head --12 - -x {ref}'
+                         ).format(h2=hisat2, ref=ref_genome)
+        align_process = sp.Popen(align_command, stdin=sp.PIPE, stdout=sp.PIPE,
+                                 shell=True, executable='/bin/bash')
+        align_output = align_process.communicate(input=hisat_input)
+        entries = align_output[0].split('\n')
+
         # Counters
         sense = 0
         antisense = 0
         checked_reads = 0
-        total_reads = 0
-
+        useful = 0
         while checked_reads < required_reads:
-            print '\nnot enough reads for this SRA, starting at a random spot'
-            useful = 0
-            start_spot = random.randint(1, num_spots)
-            while not useful:
-                # get one read or read pair
-                spot = str(start_spot)
-                start_spot += 1
-                print 'the current spot is {}'.format(spot)
-                fastq = sp.check_output(['{}'.format(fastq_dump), '-I', '-B',
-                                         '-W', '-E', '--split-spot',
-                                         '--skip-technical', '-N', spot, '-X',
-                                         spot, '-Z', sra_acc])
-                lines = fastq.split('\n')
-                format_lines = lines[:1]+lines[1::2]
-                hisat_input = '\t'.join(format_lines)
+            for line in entries[:-1]:
+                # if the previous read was useful skip this one in case
+                # it is its pair....
+                if useful:
+                    useful = 0
+                    continue
+                # print line
+                read = line.split()
+                flag = int(read[1])
 
-                align_command = ('{h2} -k 1 --no-head --12 - -x {ref}'
-                                 ).format(h2=hisat2, ref=ref_genome)
+                secondary = flag & 256
+                if secondary:
+                    print 'not a primary read, go to next spot'
+                    continue
 
-                align_process = sp.Popen('set -exo pipefail; ' + align_command,
-                                         stdin=sp.PIPE, stdout=sp.PIPE,
-                                         shell=True, executable='/bin/bash')
+                check_sense = re.findall('XS:A:[+-]', line.upper())
+                if not check_sense:
+                    print 'not a junction read, go to next spot'
+                    continue
 
-                align_output = align_process.communicate(input=hisat_input)
+                fwd_gene = check_sense[0] == 'XS:A:+'
+                rev_read = flag & 16
+                first_read = flag & 64
+                second_read = flag & 128
 
-                entries = align_output[0].split('\n')
-                for line in entries[:-1]:
-                    print line
-                    read = line.split()
-                    total_reads += 1
-                    print "{} reads have been checked".format(total_reads)
-                    flag = int(read[1])
+                if ((fwd_gene and rev_read)
+                    or (not fwd_gene and not rev_read)):
+                    if first_read or not paired:
+                        sense += 1
+                    elif second_read:
+                        antisense += 1
+                elif (fwd_gene or rev_read):
+                    if first_read or not paired:
+                        antisense += 1
+                    elif second_read:
+                        sense += 1
 
-                    secondary = flag & 256
-                    if secondary:
-                        print 'not a primary read, go to next spot'
-                        continue
+                checked_reads = sense + antisense
+                print 'a useful read! {} so far'.format(checked_reads)
+                useful = 1
 
-                    check_sense = re.findall('XS:A:[+-]', line.upper())
-                    if not check_sense:
-                        print 'not a junction read, go to next spot'
-                        continue
-
-                    fwd_gene = check_sense[0] == 'XS:A:+'
-                    rev_read = flag & 16
-                    first_read = flag & 64
-                    second_read = flag & 128
-
-                    if ((fwd_gene and rev_read)
-                        or (not fwd_gene and not rev_read)):
-                        if first_read or not paired:
-                            sense += 1
-                        elif second_read:
-                            antisense += 1
-                    elif (fwd_gene or rev_read):
-                        if first_read or not paired:
-                            antisense += 1
-                        elif second_read:
-                            sense += 1
-
-                    checked_reads = sense + antisense
-                    useful = 1
-                    print 'a useful read! {} so far'.format(checked_reads)
-                    print 'moving on to the next random spot.'
-                    break
 
         print '\nfor SRA experiment number {}'.format(SRA_num)
         print 'the SRA accession number is {}'.format(sra_acc)
@@ -177,14 +179,11 @@ if __name__ == '__main__':
         print 'number of antisense reads is {}'.format(antisense)
         print 'total number of checked reads is {}'.format(checked_reads)
         r = error_rate * 0.5
-        # Now we have min_reads processed, X as sense and Y as antisense.
-        # Check probability:
         errors = min(sense, antisense)
         stranded_prob = stats.binom.pmf(errors, checked_reads, r)
 
         r = 0.5
         unstranded_prob = stats.binom.pmf(errors, checked_reads, r)
-
 
         print 'number of "stranded errors" is {}'.format(errors)
         print ('probability of getting this number of sense and antisense'
@@ -196,3 +195,5 @@ if __name__ == '__main__':
                'reads if the expt is unstranded is {}').format(unstranded_prob)
 
         print '\nmoving on to the next SRA accession number \n'
+        end_time = time.time()
+        print "elapsed time for this SRA was {}".format(end_time-start_time)

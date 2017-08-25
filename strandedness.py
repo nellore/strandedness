@@ -19,6 +19,7 @@ Improvements to be made:
     - function definitions
     - How many reads are required?  Unknown.
     - Statistical analysis of reads afterward.
+
 """
 
 # import what needs to be imported.
@@ -62,10 +63,7 @@ if __name__ == '__main__':
     fastq_dump = args.fastqdumppath
     hisat2 = args.alignerpath
 
-    # arbitrary (??) alignment error rate for binomial distr.
-    error_rate = 0.2
-
-    # for now, arbitrary: how many reads need to be sampled per experiment
+    # How many reads need to be sampled per experiment?
     # Currently set low to check for correct running.
     required_reads = 10
 
@@ -80,8 +78,7 @@ if __name__ == '__main__':
         else:
             continue
 
-        # THE FOLLOWING IS JUST TO CREATE A SAMPLE RUN: with a large .csv file,
-        # this will check X of its SRAs.
+        # For a sample run: with a large .csv file, this will check X SRAs.
         if SRA_num > 10:
             break
         SRA_num += 1
@@ -93,20 +90,15 @@ if __name__ == '__main__':
             paired = 1
             print 'experiment is paired'
 
-        # collect 15x required read number, from all random spots.
+        # collect random spots - 15x required reads number
         required_spots = required_reads * 15
-        spot_list = np.random.randint(1, num_spots, required_spots)
-        spot_list = np.unique(spot_list)
-        while len(spot_list) < required_spots:
-            collect = required_spots - len(spot_list)
-            new_spots = np.random.randint(1, num_spots, collect)
-            spot_list = np.concatenate((spot_list, new_spots))
-            spot_list = np.unique(spot_list)
+        spot_list = random.sample(range(num_spots), required_spots)
 
+        dl_start = time.time()
         hisat_input = ''
         for start_spot in spot_list:
             spot = str(start_spot)
-            
+
             # If we have x unique spots, we will get only ~90% reads out, since
             # with the -E quality filter, some reads are rejected pre-d/l.
             fastq = sp.check_output(['{}'.format(fastq_dump), '-I', '-B',
@@ -117,6 +109,8 @@ if __name__ == '__main__':
             format_lines = lines[:1]+lines[1::2]
             read_input = '\t'.join(format_lines) + '\n'
             hisat_input += read_input
+        dl_stop = time.time()
+        print 'the time for read download was {}'.format(dl_stop-dl_start)
 
         align_command = ('{h2} -k 1 --no-head --12 - -x {ref}'
                          ).format(h2=hisat2, ref=ref_genome)
@@ -172,28 +166,31 @@ if __name__ == '__main__':
                 print 'a useful read! {} so far'.format(checked_reads)
                 useful = 1
 
+                ######
+                # WRITE LINE TO A FILE, plus spot number
+                ######
+
 
         print '\nfor SRA experiment number {}'.format(SRA_num)
         print 'the SRA accession number is {}'.format(sra_acc)
         print 'number of sense reads is {}'.format(sense)
         print 'number of antisense reads is {}'.format(antisense)
-        print 'total number of checked reads is {}'.format(checked_reads)
-        r = error_rate * 0.5
-        errors = min(sense, antisense)
-        stranded_prob = stats.binom.pmf(errors, checked_reads, r)
+        print 'total number of junction reads is {}'.format(checked_reads)
 
+        # 2-sided & symmetrical: same result whether we pick sense or antisense
         r = 0.5
-        unstranded_prob = stats.binom.pmf(errors, checked_reads, r)
+        p_value = stats.binom_test(sense, checked_reads, r)
 
-        print 'number of "stranded errors" is {}'.format(errors)
-        print ('probability of getting this number of sense and antisense'
-               'reads if the expt is stranded is {}').format(stranded_prob)
-
-        unstranded_errors = int(abs(sense-antisense)/2)
-        print 'number of unstranded errors is {}'.format(unstranded_errors)
-        print ('probability of getting this number of sense and antisense '
-               'reads if the expt is unstranded is {}').format(unstranded_prob)
+        print ('The unstranded p-value is {}').format(p_value)
 
         print '\nmoving on to the next SRA accession number \n'
         end_time = time.time()
         print "elapsed time for this SRA was {}".format(end_time-start_time)
+
+        ######
+        # WRITE SRA Accession number and p-value to a file
+        ######
+
+    #######
+    # Open p-value file and perform Benjamini-Hochberg correcting procedure
+    #######

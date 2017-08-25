@@ -98,7 +98,6 @@ if __name__ == '__main__':
         hisat_input = ''
         for start_spot in spot_list:
             spot = str(start_spot)
-
             # If we have x unique spots, we will get <x reads out, since the
             # -E quality filter rejects some reads before downloading them.
             fastq = sp.check_output(['{}'.format(fastq_dump), '-I', '-B',
@@ -187,6 +186,7 @@ if __name__ == '__main__':
 
     # Benjamini-Hochberg multiple-testing correction
     # Also available in a separate script, BH_correction.py
+    pval_list.sort(key=lambda line: line[1])
     m = len(pval_list)
     stranded_expts = []
     stranded_file = open('stranded_SRAs.txt', 'w')

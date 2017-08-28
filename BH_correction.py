@@ -14,7 +14,47 @@ Optional input:
 """
 
 import argparse
+from operator import itemgetter
 import os
+
+
+def get_sorted_pvals(file_path):
+    '''Returns a list of SRA accession numbers and their p-values from file.
+
+    Input the path to a file with SRA numbers and p-values.
+
+    Returns a list of data from the file, sorted from lowest to highest
+    p-value.
+    '''
+    with open(file_path, 'r') as pval_file:
+        list = []
+        for line in pval_file:
+            if not line == '\n':
+                line_list = line.split(',')
+                line_list[1] = line_list[1].strip('\n')
+                list.append(line_list)
+    list.sort(key=itemgetter(1))
+    return list
+
+
+def BH_correction_procedure(pvals, alpha):
+    '''Performs Benjamini-Hochberg multiple testing correction procedure.
+
+     Input list of SRA numbers and their p-values, sorted from smallest to
+     largest p-value, and the acceptable significance level for declaring a
+     discovery (alpha).
+
+     Returns whether or not a discovery can be found, and if discovery exists,
+     the list number that represents the last (highest p-value) discovery.
+     '''
+    m = len(pvals)
+    for k_rev, expt in enumerate(list(reversed(pvals))):
+        k = m - k_rev
+        p_value = float(expt[1])
+        if p_value <= alpha * k / m:
+            return True, k
+        elif k == 0:
+            return False, 0
 
 
 if __name__ == '__main__':
@@ -34,39 +74,16 @@ if __name__ == '__main__':
     pval_file_path = args.pvaluefile
     out_path = args.outputpath
 
-    with open(pval_file_path, 'r') as pval_file:
-        pval_list = []
-        for line in pval_file:
-            if not line == '\n':
-                line_list = line.split(',')
-                line_list[1] = line_list[1].strip('\n')
-                pval_list.append(line_list)
+    pval_list = get_sorted_pvals(pval_file_path)
+    discovery, largest_k = BH_correction_procedure(pval_list, alpha)
 
-    # print 'original list is {}'.format(pval_list)
-    pval_list.sort(key=lambda line: line[1], reverse=True)
-    # print 'sorted list is {}'.format(pval_list)
-
-    discovery = 0
-    m = len(pval_list)
-    for k_rev, expt in enumerate(pval_list, 1):
-        k = m - k_rev + 1
-        p_value = float(expt[1])
-        # print 'checking line {}'.format(k_rev)
-        # print 'k is {}'.format(k)
-        # print 'check is {}'.format(alpha * k / m)
-        # print 'p value is {}\n'.format(p_value)
-        if p_value <= alpha * k / m:
-            discovery = 1
-            largest_k = k
-            print 'largest k is {}'.format(k)
-            break
     if discovery:
-        stranded_expts = list(reversed(pval_list))[:k]
-        print 'BH correction complete!  Stranded experiments are these:'
+        stranded_expts = pval_list[:largest_k]
+        print 'BH correction complete!  Largest k is {}'.format(largest_k)
+        print 'Stranded experiments are these:'
         print stranded_expts
 
         stranded_file_path = os.path.join(out_path, 'stranded_SRAs.txt')
-
         with open(stranded_file_path, 'w') as stranded_file:
             for set in stranded_expts:
                 stranded_file.write('{},{}\n'.format(set[0], set[1]))

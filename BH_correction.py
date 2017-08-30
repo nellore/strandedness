@@ -28,8 +28,8 @@ def get_sorted_pvals(file_path):
     '''
     with open(file_path, 'r') as pval_file:
         list = []
-        for line in pval_file:
-            if not line == '\n':
+        for i, line in enumerate(pval_file, 1):
+            if not line == '\n' and not i == 1:
                 line_list = line.split(',')
                 line_list[1] = line_list[1].strip('\n')
                 list.append(line_list)
@@ -51,10 +51,13 @@ def BH_correction_procedure(pvals, alpha):
     for k_rev, expt in enumerate(list(reversed(pvals))):
         k = m - k_rev
         p_value = float(expt[1])
+        # print 'for item {}'.format(k)
+        # print p_value
+        # print (alpha * k / m)
         if p_value <= alpha * k / m:
             return True, k
-        elif k == 0:
-            return False, 0
+        elif k == 1:
+            return False, k
 
 
 if __name__ == '__main__':
@@ -70,7 +73,7 @@ if __name__ == '__main__':
                         'for output files: junction reads and p-values.')
 
     args = parser.parse_args()
-    alpha = args.alpha
+    alpha = float(args.alpha)
     pval_file_path = args.pvaluefile
     out_path = args.outputpath
 

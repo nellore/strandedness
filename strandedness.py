@@ -256,6 +256,7 @@ if __name__ == '__main__':
     atexit.register(shutil.rmtree, temp_dir)
     
     read_shuffle_seed = 1
+    random.seed(read_shuffle_seed)
     SRA_num = 0
     pv_path = os.path.join(out_path, 'SRA_pvals.txt')
     with open(sra_file, 'r') as sra_array, open(pv_path, 'w', 0) as pval_file:
@@ -269,8 +270,6 @@ if __name__ == '__main__':
             hisat_input = get_hisat_input(required_reads, read_multiplier,
                                           num_spots, fastq_dump, sra_acc,
                                           out_path, paired)
-            reads_path = align_sampled_reads(hisat2, ref_genome, out_path,
-                                             sra_acc, hisat_input, temp_dir)
             try:
                 reads_path = align_sampled_reads(hisat2, ref_genome, out_path,
                                                 sra_acc, hisat_input, temp_dir)
@@ -279,7 +278,6 @@ if __name__ == '__main__':
 
             sense = 0
             checked_reads = 0
-            random.seed(read_shuffle_seed)
             with gzip.open('{}'.format(reads_path), 'r') as aligned_reads:
                 sort_by_names = lambda x: x.split('\t')[0]
                 for key, alignments in groupby(aligned_reads, sort_by_names):

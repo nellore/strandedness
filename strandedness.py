@@ -27,10 +27,6 @@ import re
 import subprocess as sp
 from scipy import stats
 import time
-import tempfile
-import errno
-import atexit
-import shutil
 import gzip
 
 
@@ -84,7 +80,6 @@ def get_hisat_input(required, multiplier, total, fastq_path, acc, output,
     Returns all of the sampled reads formatted for batch alignment by hisat2,
     and the list of random spots (to be saved for later reference).
     '''
-    dl_time_start = time.time()
     spot_path = os.path.join(output, '{}_spots.txt'.format(acc))
     with open(spot_path, 'w') as spot_file:
         required_spots = required * multiplier
@@ -124,13 +119,10 @@ def get_hisat_input(required, multiplier, total, fastq_path, acc, output,
             bin += 1
         read_input = ''.join(read_format)
         hisat_formatted_input = read_input
-        dl_time_stop = time.time()
-        print 'download time was {}'.format(dl_time_stop - dl_time_start)
         return hisat_formatted_input
 
 
-def align_sampled_reads(hisat2_path, reference_genome, outpath, acc, reads,
-                        temp_dir=None):
+def align_sampled_reads(hisat2_path, reference_genome, outpath, acc, reads):
     '''Returns SAM format reads aligned by hisat2.
 
     Input:
@@ -144,26 +136,14 @@ def align_sampled_reads(hisat2_path, reference_genome, outpath, acc, reads,
 
     Returns a list of aligned reads in SAM format.
     '''
-    align_start = time.time()
-    # alignment = []
-    fastq = os.path.join(temp_dir, 'temp.fq')
     reads_path = os.path.join(outpath, '{}_reads.sam.gz'.format(acc))
-    with open(fastq, 'w') as fastq_file:
-        fastq_file.write(reads)
-    align_command = ('set -exo pipefail; cat {fastq} | {h2} --no-head '
-                     '--12 - -x {ref} | gzip > {file}').format(fastq=fastq,
-                     h2=hisat2_path, ref=reference_genome, file=reads_path)
-    try:
-        sp.check_call(align_command, shell=True, executable='/bin/bash')
-    except sp.CalledProcessException:
-        # For now, it's going to raise the exception, but we want to be
-        # robust to bad SRA runs, so you might want to arrange it so
-        # an accession number is skipped if this happens
-        raise sp.CalledProcessError
-
-    align_end = time.time()
-    print '\ntime for alignment was {}\n'.format(align_end - align_start)
-    return reads_path
+    align_command = ('set -exo pipefail; {h2} --no-head --12 - -x {ref} | gzip'
+                     ' > {file}').format(h2=hisat2_path, ref=reference_genome,
+                                         file=reads_path)
+    align_process = sp.Popen(align_command, stdin=sp.PIPE, stderr=sp.PIPE,
+                             shell=True, executable='/bin/bash')
+    align_process.communicate(input=reads)
+    return reads_path, align_process.returncode
 
 
 def read_is_useful(SAM_flag, has_XS_A_tag):
@@ -231,9 +211,6 @@ if __name__ == '__main__':
                         'multiplier for generating the number of reads to '
                         'download from fastq-dump, to account for quality '
                         'filtering and for not all reads being useful.')
-    parser.add_argument('--temp-dir', '-t', type=str, default=None,
-                        help='where to put temporary files; default is '
-                             'securely created directory')
 
     args = parser.parse_args()
     alpha = args.alpha
@@ -245,19 +222,10 @@ if __name__ == '__main__':
     required_reads = args.requiredreads
     read_multiplier = args.multiplier
 
-    # Create temporary directory for storing fastq
-    if args.temp_dir is not None:
-        try:
-            os.makedirs(args.temp_dir)
-        except OSError as e:
-            if e.errno != errno.EEXIST:
-                raise
-    temp_dir = tempfile.mkdtemp(dir=args.temp_dir)
-    atexit.register(shutil.rmtree, temp_dir)
-    
     read_shuffle_seed = 1
     random.seed(read_shuffle_seed)
     SRA_num = 0
+
     pv_path = os.path.join(out_path, 'SRA_pvals.txt')
     with open(sra_file, 'r') as sra_array, open(pv_path, 'w', 0) as pval_file:
         sra_array.next()
@@ -266,14 +234,14 @@ if __name__ == '__main__':
             if SRA_num >= 3:
                 break
             SRA_num += 1
-
+            sra_acc, num_spots, paired = extract_sra_data(experiment)
             hisat_input = get_hisat_input(required_reads, read_multiplier,
                                           num_spots, fastq_dump, sra_acc,
                                           out_path, paired)
-            try:
-                reads_path = align_sampled_reads(hisat2, ref_genome, out_path,
-                                                sra_acc, hisat_input, temp_dir)
-            except sp.CalledProcessError:
+            reads_path, failure = align_sampled_reads(hisat2, ref_genome, 
+                                                   out_path, sra_acc, 
+                                                   hisat_input)
+            if failure:
                 continue
 
             sense = 0
@@ -281,11 +249,12 @@ if __name__ == '__main__':
             with gzip.open('{}'.format(reads_path), 'r') as aligned_reads:
                 sort_by_names = lambda x: x.split('\t')[0]
                 for key, alignments in groupby(aligned_reads, sort_by_names):
-                    random.shuffle(list(alignments))
-                    for entry in alignments:
-                        read = entry.split()
+                    alignment_list = [[i] for i in alignments]
+                    random.shuffle(alignment_list)
+                    for entry in alignment_list:
+                        read = entry[0].split()
                         flag = int(read[1])
-                        XS_A_tag = re.findall('XS:A:[+-]', entry)
+                        XS_A_tag = re.findall('XS:A:[+-]', entry[0])
                         if read_is_useful(flag, XS_A_tag):
                             sense += read_sense(flag, XS_A_tag)
                             checked_reads += 1
@@ -296,11 +265,4 @@ if __name__ == '__main__':
             # 2-sided & symmetrical: same result whether we pick sense or
             # antisense
             p_value = stats.binom_test(sense, checked_reads, r)
-            print '\nthe SRA accession number is {}'.format(sra_acc)
-            print 'number of sense reads is {}'.format(sense)
-            print 'number of antisense reads is {}'.format(antisense)
-            print 'total number of junction reads is {}'.format(checked_reads)
-            print 'The unstranded p-value is {}'.format(p_value)
-            print '\nmoving on to the next SRA accession number \n'
-
             pval_file.write('{},{}\n'.format(sra_acc, p_value))

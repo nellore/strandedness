@@ -200,9 +200,9 @@ if __name__ == '__main__':
     parser.add_argument('--output-path', '-o', default='./', help='give path '
                         'for output files: sampled spots, aligned junction '
                         'reads, and SRA numbers with their p-values.')
-    parser.add_argument('--required-reads', '-n', type=int, default=50, help=''
-                        'give the target number of useful/junction reads.')
-    parser.add_argument('--multiplier', '-m', type=int, default=15, help='a '
+    parser.add_argument('--required-reads', '-n', type=int, default=100, 
+                        help='give the target number of useful reads.')
+    parser.add_argument('--multiplier', '-m', type=int, default=10, help='a '
                         'multiplier for generating the number of reads to '
                         'download from fastq-dump, to account for quality '
                         'filtering and for not all reads being useful.')

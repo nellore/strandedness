@@ -1,0 +1,1 @@
+One large .csv RunInfo file was downloaded from the SRA, then shuffled and split into 20 smaller files for starting separate cloud runs.

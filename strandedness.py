@@ -10,9 +10,12 @@ Required input:
 Optional input:
     Path to fastq-dump
     Path to hisat2
-    alpha, i.e. acceptable significance level for p-value
     Path to directory to store output files
-
+    Target number of useful reads expected per experiment.
+    The multiplier to translate target number of useful end reads to number
+        of reads required to download initially.
+    Number of alignment attempts to try per experiment before moving on.
+    Log level for logger.
 
 Improvements to be made:
     - checking for paired-end experiment - is just the "PAIRED" tag OK?
@@ -20,35 +23,16 @@ Improvements to be made:
 """
 
 import argparse
+import csv
+from datetime import datetime
+import gzip
 from itertools import groupby
+import logging
 import os
 import random
 import re
 import subprocess as sp
 from scipy import stats
-import time
-import gzip
-
-
-def extract_sra_data(csv_line):
-    '''Returns required data for one SRA experiment.
-
-    Input one line of a SRA "run info" csv file (string).
-
-    Returns the SRA accession number, the total number of reads in the
-    sequencing experiment, and whether the experiment layout was paired-end or
-    single-end.
-    '''
-    expt_data = csv_line.split(',')
-    accession_num = str(expt_data[0])
-    total_reads = int(expt_data[3])
-    # Is this "paired" label ever wrong?  Should I be re-checking this
-    # with the alignment output?
-    if expt_data[15] == 'PAIRED':
-        paired_label = True
-    else:
-        paired_label = False
-    return accession_num, total_reads, paired_label
 
 
 def get_hisat_input(required, multiplier, total, fastq_path, acc, output,
@@ -80,6 +64,7 @@ def get_hisat_input(required, multiplier, total, fastq_path, acc, output,
     Returns all of the sampled reads formatted for batch alignment by hisat2,
     and the list of random spots (to be saved for later reference).
     '''
+    dl_time_start = datetime.now()
     spot_path = os.path.join(output, '{}_spots.txt'.format(acc))
     with open(spot_path, 'w') as spot_file:
         required_spots = required * multiplier
@@ -101,16 +86,19 @@ def get_hisat_input(required, multiplier, total, fastq_path, acc, output,
                                      stop_spot, '-Z', acc])
             lines = fastq.split('\n')
             format_lines = []
-            for i, line in enumerate(lines, 1):
-                if i % 2 == 0:
-                    format_lines += [line]
-                if pairedtag:
+            if pairedtag:
+                for i, line in enumerate(lines, 1):
+                    if i % 2 == 0:
+                        format_lines += [line]
                     if i % 8 == 0:
                         read_format.extend(['\t'.join(format_lines) + '\n'])
                         format_lines = []
                     if (i-1) % 8 == 0:
                         format_lines += [line]
-                else:
+            else:
+                for i, line in enumerate(lines, 1):
+                    if i % 2 == 0:
+                        format_lines += [line]
                     if i % 4 == 0:
                         read_format.extend(['\t'.join(format_lines) + '\n'])
                         format_lines = []
@@ -119,23 +107,28 @@ def get_hisat_input(required, multiplier, total, fastq_path, acc, output,
             bin += 1
         read_input = ''.join(read_format)
         hisat_formatted_input = read_input
+        dl_time_stop = datetime.now()
+        time_difference = dl_time_stop - dl_time_start
+        elapsed_time = time_difference.total_seconds()
+        logging.info('total download time was {} seconds'.format(elapsed_time))
         return hisat_formatted_input
 
 
-def align_sampled_reads(hisat2_path, reference_genome, outpath, acc, reads):
+def align_reads(hisat2_path, reference_genome, outpath, acc, reads):
     '''Returns SAM format reads aligned by hisat2.
 
     Input:
-    hisat2_path: the path to hisat2 (string)
-    reference_genome: the path to the reference genome to be used for
-        alignment (string)
-    reads: fastq reads correctly formatted for the hisat2 -12 option (string,
-        one read per line tab separated, name seq qual if single-end or
-        name seq qual seq qual if paired-end)
-    temp_dir: dir in which to put temporary fastq
+        hisat2_path: the path to hisat2 (string)
+        reference_genome: the path to the reference genome to be used for
+            alignment (string)
+        reads: fastq reads correctly formatted for the hisat2 -12 option
+            (string, one read per line tab separated, name seq qual if
+            single-end or name seq qual seq qual if paired-end)
+        temp_dir: dir in which to put temporary fastq
 
     Returns a list of aligned reads in SAM format.
     '''
+    align_start = datetime.now()
     reads_path = os.path.join(outpath, '{}_reads.sam.gz'.format(acc))
     align_command = ('set -exo pipefail; {h2} --no-head --12 - -x {ref} | gzip'
                      ' > {file}').format(h2=hisat2_path, ref=reference_genome,
@@ -143,6 +136,11 @@ def align_sampled_reads(hisat2_path, reference_genome, outpath, acc, reads):
     align_process = sp.Popen(align_command, stdin=sp.PIPE, stderr=sp.PIPE,
                              shell=True, executable='/bin/bash')
     align_process.communicate(input=reads)
+
+    align_end = datetime.now()
+    time_difference = align_start - align_end
+    elapsed_time = time_difference.total_seconds()
+    logging.info('total alignment time was {}'.format(elapsed_time))
     return reads_path, align_process.returncode
 
 
@@ -190,71 +188,83 @@ def read_sense(SAM_flag, plus_or_minus):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Determine sample '
                                                  'strandedness.')
-    parser.add_argument('--srafile', '-s', required=True, help='File with '
+    parser.add_argument('--sra-file', '-s', required=True, help='File with '
                         'SRA accession numbers to be downloaded and '
                         'checked for strandedness.')
-    parser.add_argument('--refgenome', '-r', required=True, help='Path to '
+    parser.add_argument('--ref-genome', '-r', required=True, help='Path to '
                         'reference genome to use for the aligner.')
-    parser.add_argument('--fastqdumppath', '-f', default='fastq-dump',
+    parser.add_argument('--fastq-dump-path', '-f', default='fastq-dump',
                         help='specify the path for fastq-dump')
-    parser.add_argument('--alignerpath', '-p', default='hisat2',
+    parser.add_argument('--aligner-path', '-p', default='hisat2',
                         help='specify the path for hisat2')
-    parser.add_argument('--alpha', '-a', type=float, default=0.05,
-                        help='acceptable significance level of strandedness '
-                        'call; must be between 0 and 1.')
-    parser.add_argument('--outputpath', '-o', default='./', help='give path '
+    parser.add_argument('--output-path', '-o', default='./', help='give path '
                         'for output files: sampled spots, aligned junction '
                         'reads, and SRA numbers with their p-values.')
-    parser.add_argument('--requiredreads', '-n', type=int, default=50, help=''
+    parser.add_argument('--required-reads', '-n', type=int, default=50, help=''
                         'give the target number of useful/junction reads.')
     parser.add_argument('--multiplier', '-m', type=int, default=15, help='a '
                         'multiplier for generating the number of reads to '
                         'download from fastq-dump, to account for quality '
                         'filtering and for not all reads being useful.')
+    parser.add_argument('--max-attempts', '-a', type=int, default=3, help='the'
+                        ' number of times to attempt hisat2 alignment one one '
+                        'SRA accession number after alingment failure before '
+                        'continuing.')
+    parser.add_argument('--log-level', '-l', choices=['DEBUG', 'INFO', 'ERROR'
+                                                      'WARNING', 'CRITICAL'],
+                        default='INFO', help='choose what logging mode to run')
 
     args = parser.parse_args()
-    alpha = args.alpha
-    sra_file = args.srafile
-    ref_genome = args.refgenome
-    fastq_dump = args.fastqdumppath
-    hisat2 = args.alignerpath
-    out_path = args.outputpath
-    required_reads = args.requiredreads
+    sra_file = args.sra_file
+    ref_genome = args.ref_genome
+    fastq_dump = args.fastq_dump_path
+    hisat2 = args.aligner_path
+    out_path = args.output_path
+    required_reads = args.required_reads
     read_multiplier = args.multiplier
+    max_attempts = args.max_attempts
+    log_mode = args.log_level
+
+    time_now = str(datetime.now())
+    log_file = os.path.join(out_path, '{}_log_file.txt'.format(time_now))
+    logging.basicConfig(filename=log_file, level=log_mode)
 
     read_shuffle_seed = 1
     random.seed(read_shuffle_seed)
     SRA_num = 0
 
     pv_path = os.path.join(out_path, 'SRA_pvals.txt')
-    with open(sra_file, 'r') as sra_array, open(pv_path, 'w', 0) as pval_file:
+    with open(sra_file) as sra_array, open(pv_path, 'w', 0) as pval_file:
         sra_array.next()
-        for experiment in sra_array:
-            # For a sample run: with a large .csv file, this will check X SRAs.
-            if SRA_num >= 3:
-                break
-            SRA_num += 1
-            sra_acc, num_spots, paired = extract_sra_data(experiment)
+        csv_reader = csv.reader(sra_array, delimiter=',', quotechar='"')
+        for experiment in csv_reader:
+            sra_acc, num_spots, paired = (experiment[0], int(experiment[3]),
+                                          experiment[15] == 'PAIRED')
             hisat_input = get_hisat_input(required_reads, read_multiplier,
                                           num_spots, fastq_dump, sra_acc,
                                           out_path, paired)
-            reads_path, failure = align_sampled_reads(hisat2, ref_genome, 
-                                                   out_path, sra_acc, 
-                                                   hisat_input)
-            if failure:
+            attempt = 0
+            while attempt < max_attempts:
+                reads_path, failure = align_reads(hisat2, ref_genome, out_path,
+                                                  sra_acc, hisat_input)
+                attempt += 1
+                if not failure:
+                    break
+            else:
+                logging.info('alignment failed for SRA {}'.format(sra_acc))
                 continue
-
+                
             sense = 0
             checked_reads = 0
             with gzip.open('{}'.format(reads_path), 'r') as aligned_reads:
                 sort_by_names = lambda x: x.split('\t')[0]
                 for key, alignments in groupby(aligned_reads, sort_by_names):
-                    alignment_list = [[i] for i in alignments]
+                    alignment_list = list(alignments)
                     random.shuffle(alignment_list)
                     for entry in alignment_list:
-                        read = entry[0].split()
+                        read = entry.split('\t')
                         flag = int(read[1])
-                        XS_A_tag = re.findall('XS:A:[+-]', entry[0])
+                        XS_A_tag = re.findall('XS:A:[+-]', entry)
                         if read_is_useful(flag, XS_A_tag):
                             sense += read_sense(flag, XS_A_tag)
                             checked_reads += 1
@@ -265,4 +275,11 @@ if __name__ == '__main__':
             # 2-sided & symmetrical: same result whether we pick sense or
             # antisense
             p_value = stats.binom_test(sense, checked_reads, r)
-            pval_file.write('{},{}\n'.format(sra_acc, p_value))
+            logging.info('The SRA accession number is {}'.format(sra_acc))
+            logging.info('{} sense reads.'.format(sense))
+            logging.info('{} antisense reads.'.format(antisense))
+            logging.info('{} junction reads.'.format(checked_reads))
+            logging.info('The unstranded p-value is {}\n'.format(p_value))
+
+            print >>pval_file, '{},{}'.format(sra_acc, p_value)
+            # pval_file.write('{},{}\n'.format(sra_acc, p_value))

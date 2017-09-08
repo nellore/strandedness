@@ -232,7 +232,7 @@ if __name__ == '__main__':
     read_shuffle_seed = 1
     random.seed(read_shuffle_seed)
     SRA_num = 0
-    name_tag = sra_file.split('/')[-1].split('.')[0]
+    name_tag = os.path.basename(sra_file).split('.')[0]
     pv_path = os.path.join(out_path, 'SRA_pvals_{}.txt'.format(name_tag))
     with open(sra_file) as sra_array, open(pv_path, 'w', 0) as pval_file:
         sra_array.next()

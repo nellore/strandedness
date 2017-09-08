@@ -232,8 +232,8 @@ if __name__ == '__main__':
     read_shuffle_seed = 1
     random.seed(read_shuffle_seed)
     SRA_num = 0
-
-    pv_path = os.path.join(out_path, 'SRA_pvals.txt')
+    name_tag = sra_file.split('/')[-1].split('.')[0]
+    pv_path = os.path.join(out_path, 'SRA_pvals_{}.txt'.format(name_tag))
     with open(sra_file) as sra_array, open(pv_path, 'w', 0) as pval_file:
         sra_array.next()
         csv_reader = csv.reader(sra_array, delimiter=',', quotechar='"')

@@ -11,11 +11,7 @@ Optional input:
     Path to fastq-dump
     Path to hisat2
     Path to directory to store output files
-    Target number of useful reads expected per experiment.
-    The multiplier to translate target number of useful end reads to number
-        of reads required to download initially.
-    Number of alignment attempts to try per experiment before moving on.
-    Log level for logger.
+
 
 Improvements to be made:
     - checking for paired-end experiment - is just the "PAIRED" tag OK?
@@ -28,6 +24,7 @@ from datetime import datetime
 import gzip
 from itertools import groupby
 import logging
+from operator import itemgetter
 import os
 import random
 import re
@@ -64,11 +61,12 @@ def get_hisat_input(required, multiplier, total, fastq_path, acc, output,
     Returns all of the sampled reads formatted for batch alignment by hisat2,
     and the list of random spots (to be saved for later reference).
     '''
-    dl_time_start = datetime.now()
+    dl_start = datetime.now()
     spot_path = os.path.join(output, '{}_spots.txt'.format(acc))
     with open(spot_path, 'w') as spot_file:
         required_spots = required * multiplier
-        num_bins = 100
+        # num_bins = 100
+        num_bins = 10
         bin_spots = required_spots/num_bins
         bin_size = total/num_bins
         bin = 1
@@ -86,29 +84,20 @@ def get_hisat_input(required, multiplier, total, fastq_path, acc, output,
                                      stop_spot, '-Z', acc])
             lines = fastq.split('\n')
             format_lines = []
-            if pairedtag:
-                for i, line in enumerate(lines, 1):
-                    if i % 2 == 0:
-                        format_lines += [line]
-                    if i % 8 == 0:
-                        read_format.extend(['\t'.join(format_lines) + '\n'])
-                        format_lines = []
-                    if (i-1) % 8 == 0:
-                        format_lines += [line]
-            else:
-                for i, line in enumerate(lines, 1):
-                    if i % 2 == 0:
-                        format_lines += [line]
-                    if i % 4 == 0:
-                        read_format.extend(['\t'.join(format_lines) + '\n'])
-                        format_lines = []
-                    if (i-1) % 4 == 0:
-                        format_lines += [line]
+            last_line = 4 * (pairedtag + 1)
+            for i, line in enumerate(lines, 1):
+                if i % 2 == 0:
+                    format_lines += [line]
+                elif (i - 1) % last_line == 0:
+                    format_lines += [line]
+                if i % last_line == 0:
+                    read_format.extend(['\t'.join(format_lines) + '\n'])
+                    format_lines = []
             bin += 1
         read_input = ''.join(read_format)
         hisat_formatted_input = read_input
-        dl_time_stop = datetime.now()
-        time_difference = dl_time_stop - dl_time_start
+        dl_end = datetime.now()
+        time_difference = dl_end - dl_start
         elapsed_time = time_difference.total_seconds()
         logging.info('total download time was {} seconds'.format(elapsed_time))
         return hisat_formatted_input
@@ -138,32 +127,64 @@ def align_reads(hisat2_path, reference_genome, outpath, acc, reads):
     align_process.communicate(input=reads)
 
     align_end = datetime.now()
-    time_difference = align_start - align_end
+    time_difference = align_end - align_start
     elapsed_time = time_difference.total_seconds()
     logging.info('total alignment time was {}'.format(elapsed_time))
     return reads_path, align_process.returncode
 
 
-def read_is_useful(SAM_flag, has_XS_A_tag):
-    '''Checks requirements for usability of the current read.
+def filter_alignments(alignments, paired_tag):
+    '''Returns only alignments with highest alignment scores.
 
-    Input
-    previous read: True if the previous read was useful.
-    SAM_flag (int)
-    has_XS_A_tag: True if the alignment has this tag.
+    Input:
+        alignment_list: list of all returned alignments for one read or pair.
+        paired_tag: whether the experiment is paired end or single end.
 
-    If this is a paired read and its pair was a useful junction read, then this
-    one can't be counted (to avoid "unfair" double counting).  If this read
-    represents a non-primary alignment, or is not a junction read, then it is
-    not useful.
+    Checks each alignment for AS:i: tag, then filters the list by highest
+    possible AS:i: value for the group of alignments.
 
-    Returns True if the read is useful, otherwise returns False.
+    Then, if the experiment is paired-end: chooses randomly whether to pick
+    first reads or second reads, then checks the SAM flag & 64 for first reads.
+    (This assumes that the "PAIRED" entry in the SRA csv is correct, and that
+    all reads here will be paired-end, and that therefore, any read that does
+    not have flag & 64 must have flag & 128, i.e. be a second read.)
+
+    Returns a list of alignments with the highest alignment scores, either
+    first or second read only if paired end.
     '''
-    secondary_read = SAM_flag & 256
-    if has_XS_A_tag:
-        if not secondary_read:
-            return True
-    return False
+    # results = re.findall('(^.*AS:i:([+-]?\d+).*$)', '\n'.join(alignment_list),
+    #                      flags=re.M)
+    # if not results:
+    #     return 0
+    # max_score = max(results, key=itemgetter(1))[1]
+    # alignments = filter(lambda item: item[1] == max_score, results)
+    # primary_alignments = [item[0] for item in alignments]
+    # return primary_alignments
+    alignment_scores = []
+    for entry in alignments:
+        for tag in entry.split('\t'):
+            if tag[:5] == 'AS:i:':
+                alignment_scores.extend([int(tag[5:])])
+    if not alignment_scores:
+        return 0
+    max_alignment_score = max(alignment_scores)
+    primary_alignments = [alignments[i] for i, alignment_score
+                          in enumerate(alignment_scores)
+                          if alignment_score == max_alignment_score]
+    if paired_tag:
+        first_reads = random.getrandbits(1)
+        single_end = []
+        for entry in primary_alignments:
+            read = entry.split('\t')
+            flag = int(read[1])
+            if not flag & 1:
+                break
+            if first_reads == (flag & 64 == 64):
+                single_end.extend([entry])
+        prepared_alignments = single_end
+    else:
+        prepared_alignments = primary_alignments
+    return prepared_alignments
 
 
 def read_sense(SAM_flag, plus_or_minus):
@@ -179,10 +200,10 @@ def read_sense(SAM_flag, plus_or_minus):
     it is "antisense."
     '''
     fwd_gene = plus_or_minus[0] == 'XS:A:+'
-    paired = SAM_flag & 1
-    rev_read = SAM_flag & 16
-    first_read = SAM_flag & 64
-    return (fwd_gene is not rev_read) is (first_read or not paired)
+    paired = SAM_flag & 1 == 1
+    rev_read = SAM_flag & 16 == 16
+    first_read = SAM_flag & 64 == 64
+    return (fwd_gene != rev_read) == (first_read or not paired)
 
 
 if __name__ == '__main__':
@@ -195,12 +216,12 @@ if __name__ == '__main__':
                         'reference genome to use for the aligner.')
     parser.add_argument('--fastq-dump-path', '-f', default='fastq-dump',
                         help='specify the path for fastq-dump')
-    parser.add_argument('--aligner-path', '-p', default='hisat2',
+    parser.add_argument('--hisat-path', '-p', default='hisat2',
                         help='specify the path for hisat2')
     parser.add_argument('--output-path', '-o', default='./', help='give path '
                         'for output files: sampled spots, aligned junction '
                         'reads, and SRA numbers with their p-values.')
-    parser.add_argument('--required-reads', '-n', type=int, default=100, 
+    parser.add_argument('--required-reads', '-n', type=int, default=100,
                         help='give the target number of useful reads.')
     parser.add_argument('--multiplier', '-m', type=int, default=10, help='a '
                         'multiplier for generating the number of reads to '
@@ -218,7 +239,7 @@ if __name__ == '__main__':
     sra_file = args.sra_file
     ref_genome = args.ref_genome
     fastq_dump = args.fastq_dump_path
-    hisat2 = args.aligner_path
+    hisat2 = args.hisat_path
     out_path = args.output_path
     required_reads = args.required_reads
     read_multiplier = args.multiplier
@@ -229,17 +250,23 @@ if __name__ == '__main__':
     log_file = os.path.join(out_path, '{}_log_file.txt'.format(time_now))
     logging.basicConfig(filename=log_file, level=log_mode)
 
-    read_shuffle_seed = 1
-    random.seed(read_shuffle_seed)
-    SRA_num = 0
+    random.seed(5)
+    useful = True
     name_tag = os.path.basename(sra_file).split('.')[0]
-    pv_path = os.path.join(out_path, 'SRA_pvals_{}.txt'.format(name_tag))
-    with open(sra_file) as sra_array, open(pv_path, 'w', 0) as pval_file:
+    pv_rand = os.path.join(out_path, 'random_pvals_{}.txt'.format(name_tag))
+    pv_weigh = os.path.join(out_path, 'weighted_pvals_{}.txt'.format(name_tag))
+    with open(sra_file) as sra_array, \
+         open(pv_rand, 'w', 0) as pval_rand_file,\
+         open (pv_weigh, 'w', 0) as pval_weigh_file:
         sra_array.next()
-        csv_reader = csv.reader(sra_array, delimiter=',', quotechar='"')
+        csv_reader = csv.reader(sra_array)
         for experiment in csv_reader:
             sra_acc, num_spots, paired = (experiment[0], int(experiment[3]),
                                           experiment[15] == 'PAIRED')
+            # to filter out single cell reads
+            minimum_spots = 10000000
+            if num_spots < minimum_spots:
+                continue
             hisat_input = get_hisat_input(required_reads, read_multiplier,
                                           num_spots, fastq_dump, sra_acc,
                                           out_path, paired)
@@ -253,33 +280,55 @@ if __name__ == '__main__':
             else:
                 logging.info('alignment failed for SRA {}'.format(sra_acc))
                 continue
-                
-            sense = 0
-            checked_reads = 0
+
+            random_sense = 0
+            random_checked = 0
+            weighted_sense = 0
+            weighted_checked = 0
             with gzip.open('{}'.format(reads_path), 'r') as aligned_reads:
                 sort_by_names = lambda x: x.split('\t')[0]
-                for key, alignments in groupby(aligned_reads, sort_by_names):
-                    alignment_list = list(alignments)
-                    random.shuffle(alignment_list)
-                    for entry in alignment_list:
+                for key, group in groupby(aligned_reads, sort_by_names):
+                    alignments = list(group)
+                    primary_alignments = filter_alignments(alignments, paired)
+                    if not primary_alignments:
+                        continue
+                    num_primaries = float(len(primary_alignments))
+                    weight = 1 / num_primaries
+                    random.shuffle(primary_alignments)
+                    one_read = not useful
+                    for entry in primary_alignments:
                         read = entry.split('\t')
                         flag = int(read[1])
-                        XS_A_tag = re.findall('XS:A:[+-]', entry)
-                        if read_is_useful(flag, XS_A_tag):
-                            sense += read_sense(flag, XS_A_tag)
-                            checked_reads += 1
-                            break
+                        XS_A = re.findall('XS:A:[+-]', entry)
+                        if XS_A:
+                            weighted_sense += read_sense(flag, XS_A) * weight
+                            weighted_checked += weight
+                            if not one_read == useful:
+                                random_sense += read_sense(flag, XS_A)
+                                random_checked += 1
+                                one_read = useful
 
-            antisense = checked_reads - sense
+            # stats.binom_test is a 2-sided & symmetrical cdf calculation:
+            # same result whether sense or antisense is used
             r = 0.5
-            # 2-sided & symmetrical: same result whether we pick sense or
-            # antisense
-            p_value = stats.binom_test(sense, checked_reads, r)
-            logging.info('The SRA accession number is {}'.format(sra_acc))
-            logging.info('{} sense reads.'.format(sense))
-            logging.info('{} antisense reads.'.format(antisense))
-            logging.info('{} junction reads.'.format(checked_reads))
-            logging.info('The unstranded p-value is {}\n'.format(p_value))
+            random_anti = random_checked - random_sense
+            random_p = stats.binom_test(random_sense, random_checked, r)
+            weighted_anti = weighted_checked - weighted_sense
+            weighted_p = stats.binom_test(weighted_sense, weighted_checked, r)
 
-            print >>pval_file, '{},{}'.format(sra_acc, p_value)
+            logging.info('The SRA accession number is {}'.format(sra_acc))
+            logging.info('pval file record is {}'.format(name_tag))
+            logging.info('Drawing one random primary alignment, there are:')
+            logging.info('{} sense reads.'.format(random_sense))
+            logging.info('{} antisense reads.'.format(random_anti))
+            logging.info('{} junction reads.'.format(random_checked))
+            logging.info('The random p-value is {}'.format(random_p))
+            logging.info('Looking at all primary alignments, there are:')
+            logging.info('{} weighted sense reads.'.format(weighted_sense))
+            logging.info('{} weighted antisense reads.'.format(weighted_anti))
+            logging.info('The weighted p-value is {}.\n'.format(weighted_p))
+
+            print >>pval_rand_file, '{},{}'.format(sra_acc, random_p)
+            print >>pval_weigh_file, '{},{}'.format(sra_acc, weighted_p)
             # pval_file.write('{},{}\n'.format(sra_acc, p_value))
+            

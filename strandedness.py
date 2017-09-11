@@ -65,8 +65,7 @@ def get_hisat_input(required, multiplier, total, fastq_path, acc, output,
     spot_path = os.path.join(output, '{}_spots.txt'.format(acc))
     with open(spot_path, 'w') as spot_file:
         required_spots = required * multiplier
-        # num_bins = 100
-        num_bins = 10
+        num_bins = 100
         bin_spots = required_spots/num_bins
         bin_size = total/num_bins
         bin = 1

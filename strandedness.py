@@ -33,7 +33,7 @@ from scipy import stats
 
 
 def get_hisat_input(required, multiplier, total, fastq_path, acc, output,
-                    pairedtag):
+                    pairedtag, max_attempts):
     '''Samples & downloads fastq reads, and prepares them for a hisat2 -12 run.
 
     Input:
@@ -66,6 +66,7 @@ def get_hisat_input(required, multiplier, total, fastq_path, acc, output,
     with open(spot_path, 'w') as spot_file:
         required_spots = required * multiplier
         num_bins = 100
+        # num_bins = 10
         bin_spots = required_spots/num_bins
         bin_size = total/num_bins
         bin = 1
@@ -77,10 +78,19 @@ def get_hisat_input(required, multiplier, total, fastq_path, acc, output,
             spot_file.write('{}\n'.format(start_spot))
             spot = str(start_spot)
             stop_spot = str(start_spot + bin_spots)
-            fastq = sp.check_output(['{}'.format(fastq_path), '-I', '-B',
-                                     '-W', '-E', '--split-spot',
-                                     '--skip-technical', '-N', spot, '-X',
-                                     stop_spot, '-Z', acc])
+            attempt = 0
+            while attempt < max_attempts:
+                try:
+                    fastq = sp.check_output(['{}'.format(fastq_path), '-I',
+                                             '-B', '-W', '-E', '--split-spot',
+                                             '--skip-technical', '-N', spot,
+                                             '-X', stop_spot, '-Z', acc])
+                    break
+                except:
+                    logging.info('acc {} failed: attempt {}'.format(acc,
+                                                                    attempt))
+                    attempt += 1
+
             lines = fastq.split('\n')
             format_lines = []
             last_line = 4 * (pairedtag + 1)
@@ -245,13 +255,13 @@ if __name__ == '__main__':
     max_attempts = args.max_attempts
     log_mode = args.log_level
 
-    time_now = str(datetime.now())
-    log_file = os.path.join(out_path, '{}_log_file.txt'.format(time_now))
-    logging.basicConfig(filename=log_file, level=log_mode)
 
     random.seed(5)
     useful = True
     name_tag = os.path.basename(sra_file).split('.')[0]
+    now = str(datetime.now())
+    log_file = os.path.join(out_path, '{}_{}_log.txt'.format(name_tag, now))
+    logging.basicConfig(filename=log_file, level=log_mode)
     pv_rand = os.path.join(out_path, 'random_pvals_{}.txt'.format(name_tag))
     pv_weigh = os.path.join(out_path, 'weighted_pvals_{}.txt'.format(name_tag))
     with open(sra_file) as sra_array, \
@@ -262,13 +272,15 @@ if __name__ == '__main__':
         for experiment in csv_reader:
             sra_acc, num_spots, paired = (experiment[0], int(experiment[3]),
                                           experiment[15] == 'PAIRED')
+
             # to filter out single cell reads
             minimum_spots = 10000000
             if num_spots < minimum_spots:
                 continue
+
             hisat_input = get_hisat_input(required_reads, read_multiplier,
                                           num_spots, fastq_dump, sra_acc,
-                                          out_path, paired)
+                                          out_path, paired, max_attempts)
             attempt = 0
             while attempt < max_attempts:
                 reads_path, failure = align_reads(hisat2, ref_genome, out_path,
@@ -291,6 +303,7 @@ if __name__ == '__main__':
                     primary_alignments = filter_alignments(alignments, paired)
                     if not primary_alignments:
                         continue
+
                     num_primaries = float(len(primary_alignments))
                     weight = 1 / num_primaries
                     random.shuffle(primary_alignments)

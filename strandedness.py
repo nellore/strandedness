@@ -90,6 +90,8 @@ def get_hisat_input(required, multiplier, total, fastq_path, acc, output,
                     logging.info('acc {} failed: attempt {}'.format(acc,
                                                                     attempt))
                     attempt += 1
+            else:
+                continue
 
             lines = fastq.split('\n')
             format_lines = []
